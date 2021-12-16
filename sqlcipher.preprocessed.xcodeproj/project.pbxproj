@@ -710,6 +710,7 @@
 			buildSettings = {
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
 				CLANG_CXX_LIBRARY = "libc++";
+				IPHONEOS_DEPLOYMENT_TARGET = 9.0;
 				TARGETED_DEVICE_FAMILY = "1,2,4,6";
 			};
 			name = Debug;
@@ -720,6 +721,7 @@
 			buildSettings = {
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
 				CLANG_CXX_LIBRARY = "libc++";
+				IPHONEOS_DEPLOYMENT_TARGET = 9.0;
 				TARGETED_DEVICE_FAMILY = "1,2,4,6";
 			};
 			name = Release;
