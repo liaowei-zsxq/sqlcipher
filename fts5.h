@@ -21,7 +21,7 @@
 #ifndef _FTS5_H
 #define _FTS5_H
 
-#include "sqlite3.h"
+#include <sqlite3.h>
 
 #ifdef __cplusplus
 extern "C" {

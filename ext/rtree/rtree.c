@@ -60,7 +60,7 @@
   #include "sqlite3ext.h"
   SQLITE_EXTENSION_INIT1
 #else
-  #include "sqlite3.h"
+  #include <sqlite3.h>
 #endif
 
 #include <string.h>
