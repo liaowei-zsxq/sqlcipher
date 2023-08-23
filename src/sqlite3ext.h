@@ -17,7 +17,7 @@
 */
 #ifndef SQLITE3EXT_H
 #define SQLITE3EXT_H
-#include <sqlite3.h>
+#include <sqlcipher/sqlite3.h>
 #include "sqlcipher.h"
 
 typedef struct sqlcipher_api_routines sqlcipher_api_routines;

@@ -14,7 +14,7 @@
 #ifndef _SQLITE3RTREE_H_
 #define _SQLITE3RTREE_H_
 
-#include <sqlite3.h>
+#include <sqlcipher/sqlite3.h>
 
 #ifdef __cplusplus
 extern "C" {

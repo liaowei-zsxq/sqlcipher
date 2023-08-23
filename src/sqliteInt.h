@@ -164,7 +164,7 @@
 ** first in QNX.  Also, the _USE_32BIT_TIME_T macro must appear first for
 ** MinGW.
 */
-#include <sqlite3.h>
+#include <sqlcipher/sqlite3.h>
 
 #if __STDC_VERSION__ >= 201112L
 #include <stdatomic.h>

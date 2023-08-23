@@ -84,7 +84,7 @@
 #include <string.h>
 #include <stdio.h>
 
-#include <sqlite3.h>
+#include <sqlcipher/sqlite3.h>
 
 #if !defined(SQLITE_CORE) || defined(SQLITE_ENABLE_RBU)
 #include "sqlite3rbu.h"

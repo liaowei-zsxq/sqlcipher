@@ -41,7 +41,7 @@
 SQLITE_EXTENSION_INIT3
 #endif
 
-#include <sqlite3.h>
+#include <sqlcipher/sqlite3.h>
 #include "fts3_tokenizer.h"
 #include "fts3_hash.h"
 
