@@ -21,6 +21,13 @@
 #ifndef SQLITE3_WCDB_H
 #define SQLITE3_WCDB_H
 
+/*
+ * Make sure we can call this stuff from C++.
+ */
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #ifdef SQLITE_WCDB
 
 #ifdef SQLITE_WCDB_LOCK_HOOK
@@ -54,6 +61,18 @@ void sqlite3_suspend(sqlite3 *db, int suspend);
 void sqlite3_unimpeded(sqlite3 *db, int unimpeded);
 #endif
 
+void sqlite3_revertCommitOrder(sqlite3 *db);
+
+void* sqlite3_getCipherContext(sqlite3 *db, const char* schema);
+
+int sqlcipher_codec_ctx_get_reservesize(void *ctx);
+
+void* sqlite3Codec(void *iCtx, void *data, unsigned int pgno, int mode);
+
 #endif // SQLITE_WCDB
 
 #endif /* SQLITE3_WCDB_H */
+
+#ifdef __cplusplus
+}
+#endif

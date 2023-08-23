@@ -394,6 +394,30 @@ static int posixOpen(const char *zFile, int flags, int mode){
   return open(zFile, flags, mode);
 }
 
+/*
+** Some hook mechanisms will change the address of these functions at runtime.
+** Using wrapper function can enable these functions to support hook.
+*/
+static int posixClose(int fd){
+    return close(fd);
+}
+
+static size_t posixWrite(int fd, const void* buf,size_t nbyte){
+  return write(fd, buf, nbyte);
+}
+
+static size_t posixPWrite(int fd, const void * buf, size_t nbyte, off_t offset){
+  return pwrite(fd, buf, nbyte, offset);
+}
+
+static void* posixMMap(void *p, size_t size, int srcMode, int option, int srcFD, off_t offset){
+  return mmap(p, size, srcMode, option, srcFD, offset);
+}
+
+static int posixMunmap(void *p, size_t size){
+    return munmap(p, size);
+}
+
 /* Forward reference */
 static int openDirectory(const char*, int*);
 static int unixGetpagesize(void);
@@ -412,7 +436,7 @@ static struct unix_syscall {
   { "open",         (sqlite3_syscall_ptr)posixOpen,  0  },
 #define osOpen      ((int(*)(const char*,int,int))aSyscall[0].pCurrent)
 
-  { "close",        (sqlite3_syscall_ptr)close,      0  },
+  { "close",        (sqlite3_syscall_ptr)posixClose,      0  },
 #define osClose     ((int(*)(int))aSyscall[1].pCurrent)
 
   { "access",       (sqlite3_syscall_ptr)access,     0  },
@@ -466,11 +490,11 @@ static struct unix_syscall {
 #endif
 #define osPread64 ((ssize_t(*)(int,void*,size_t,off64_t))aSyscall[10].pCurrent)
 
-  { "write",        (sqlite3_syscall_ptr)write,      0  },
+  { "write",        (sqlite3_syscall_ptr)posixWrite, 0  },
 #define osWrite     ((ssize_t(*)(int,const void*,size_t))aSyscall[11].pCurrent)
 
 #if defined(USE_PREAD) || SQLITE_ENABLE_LOCKING_STYLE
-  { "pwrite",       (sqlite3_syscall_ptr)pwrite,     0  },
+  { "pwrite",       (sqlite3_syscall_ptr)posixPWrite,0  },
 #else
   { "pwrite",       (sqlite3_syscall_ptr)0,          0  },
 #endif
@@ -522,14 +546,14 @@ static struct unix_syscall {
 #define osGeteuid   ((uid_t(*)(void))aSyscall[21].pCurrent)
 
 #if !defined(SQLITE_OMIT_WAL) || SQLITE_MAX_MMAP_SIZE>0
-  { "mmap",         (sqlite3_syscall_ptr)mmap,            0 },
+  { "mmap",         (sqlite3_syscall_ptr)posixMMap,       0 },
 #else
   { "mmap",         (sqlite3_syscall_ptr)0,               0 },
 #endif
 #define osMmap ((void*(*)(void*,size_t,int,int,int,off_t))aSyscall[22].pCurrent)
 
 #if !defined(SQLITE_OMIT_WAL) || SQLITE_MAX_MMAP_SIZE>0
-  { "munmap",       (sqlite3_syscall_ptr)munmap,          0 },
+  { "munmap",       (sqlite3_syscall_ptr)posixMunmap,     0 },
 #else
   { "munmap",       (sqlite3_syscall_ptr)0,               0 },
 #endif
@@ -5077,12 +5101,133 @@ static int unixShmUnmap(
   return SQLITE_OK;
 }
 
+#ifdef SQLITE_WCDB
+void checkOpenShm(sqlite3_file *fd, int *opened)
+{
+  unixFile *file = (unixFile*)fd;
+  if(file->pInode == 0){
+    /*
+    ** pInode should be assigned before the call of this routine.
+    ** Set opened to 1 to avoid further operations.
+     */
+    *opened = 1;
+  }else if(file->pInode->pShmNode){
+    *opened = 1;
+  }else{
+    *opened = 0;
+  }
+}
+
+sqlite_int64 enterMutexAndLockShm(sqlite3_file *fd)
+{
+  unixEnterMutex();
+  sqlite_int64 shmFd = -1;                    /* File Descriptpr of SHM file */
+  
+  int opened = 0;
+  checkOpenShm(fd, &opened);
+  if(opened){
+    return shmFd;
+  }
+  
+  unixFile *pDbFd = (unixFile*)fd;
+  int nShmFileNameLength;            /* Size of the SHM filename in bytes */
+  char* shmFileName = 0;             /* Path of SHM file*/
+  struct stat sStat;                 /* fstat() info for database file */
+  
+  /* Call fstat() to figure out the permissions on the database file. If
+  ** a new *-shm file is created, an attempt will be made to create it
+  ** with the same permissions.
+  */
+  if(pDbFd->h>=0 && osFstat(pDbFd->h, &sStat) ){
+    goto shm_lock_finish;
+  }
+#ifdef SQLITE_SHM_DIRECTORY
+  nShmFileNameLength = sizeof(SQLITE_SHM_DIRECTORY) + 31;
+#else
+  const char *zBasePath = pDbFd->zPath;
+  nShmFileNameLength = 6 + (int)strlen(zBasePath);
+#endif
+  shmFileName = sqlite3_malloc64(nShmFileNameLength);
+  
+#ifdef SQLITE_SHM_DIRECTORY
+  sqlite3_snprintf(nShmFilename, shmFileName,
+                   SQLITE_SHM_DIRECTORY "/sqlite-shm-%x-%x",
+                   (u32)sStat.st_ino, (u32)sStat.st_dev);
+#else
+  sqlite3_snprintf(nShmFileNameLength, shmFileName, "%s-shm", zBasePath);
+  sqlite3FileSuffix3(pDbFd->zPath, shmFileName);
+#endif
+  
+  shmFd = robust_open(shmFileName, O_RDONLY, (sStat.st_mode&0777));
+  if(shmFd<0){
+    goto shm_lock_finish;
+  }
+  /* If this process is running as root, make sure that the SHM file
+  ** is owned by the same user that owns the original database.  Otherwise,
+  ** the original owner will not be able to connect.
+  */
+  robustFchown(shmFd, sStat.st_uid, sStat.st_gid);
+  
+  struct flock f;        /* The posix advisory locking structure */
+  f.l_type = F_WRLCK;
+  f.l_whence = SEEK_SET;
+  f.l_start = UNIX_SHM_DMS;
+  f.l_len = 1;
+  if(osSetPosixAdvisoryLock(shmFd, &f, pFile)!=SQLITE_OK){
+    robust_close(0, shmFd, __LINE__);
+    shmFd = -1;
+  }
+  
+shm_lock_finish:
+  if(shmFileName != 0){
+    sqlite3_free(shmFileName);
+  }
+  return shmFd;
+}
+
+void leaveMutexAndUnLockShm(sqlite_int64 shmFd)
+{
+  if(shmFd>=0){
+    struct flock f;        /* The posix advisory locking structure */
+    f.l_type = F_UNLCK;
+    f.l_whence = SEEK_SET;
+    f.l_start = UNIX_SHM_DMS;
+    f.l_len = 1;
+    osSetPosixAdvisoryLock(shmFd, &f, pFile);
+    robust_close(0, shmFd, __LINE__);
+    shmFd = -1;
+  }
+  unixLeaveMutex();
+}
+
+int readShmFile(int shmFd, sqlite3_int64 offset, void *pBuf, int cnt)
+{
+  unixFile unixFile;
+  memset((void*)&unixFile, 0, sizeof(unixFile));
+  unixFile.h = shmFd;
+  unixFile.zPath = "";
+  int rc = SQLITE_OK;
+  sqlite_int64 size = 0;
+  rc = unixFileSize((sqlite3_file*)&unixFile, &size);
+  if(rc != SQLITE_OK) {
+    return rc;
+  }
+  if(size < offset + cnt){
+    return SQLITE_IOERR_SHORT_READ;
+  }
+  return unixRead((sqlite3_file*)&unixFile, pBuf, cnt, offset);
+}
+#endif
 
 #else
-# define unixShmMap     0
-# define unixShmLock    0
-# define unixShmBarrier 0
-# define unixShmUnmap   0
+# define unixShmMap                   0
+# define unixShmLock                  0
+# define unixShmBarrier               0
+# define unixShmUnmap                 0
+# define unixCheckOpenShm             0
+# define unixEnterMutexAndLockShm     0
+# define unixLeaveMutexAndUnLockShm   0
+# define unixReadShmFile              0
 #endif /* #ifndef SQLITE_OMIT_WAL */
 
 #if SQLITE_MAX_MMAP_SIZE>0
@@ -6039,7 +6184,7 @@ static int unixOpen(
   unixFile *p = (unixFile *)pFile;
   int fd = -1;                   /* File descriptor returned by open() */
   int openFlags = 0;             /* Flags to pass to open() */
-  int eType = flags&0xFFFFFF00;  /* Type of file to open */
+  int eType = flags&0xFFF00;  /* Type of file to open */
   int noLock;                    /* True to omit locking primitives */
   int rc = SQLITE_OK;            /* Function Return Code */
   int ctrlFlags = 0;             /* UNIXFILE_* flags */
@@ -6047,8 +6192,8 @@ static int unixOpen(
   int isExclusive  = (flags & SQLITE_OPEN_EXCLUSIVE);
   int isDelete     = (flags & SQLITE_OPEN_DELETEONCLOSE);
   int isCreate     = (flags & SQLITE_OPEN_CREATE);
-  int isReadonly   = (flags & SQLITE_OPEN_READONLY);
-  int isReadWrite  = (flags & SQLITE_OPEN_READWRITE);
+  int isReadonly   = (flags & SQLITE_OPEN_READONLY || flags & SQLITE_OPEN_MAINDB_READONLY);
+  int isReadWrite  = (flags & SQLITE_OPEN_READWRITE && !(flags & SQLITE_OPEN_MAINDB_READONLY));
 #if SQLITE_ENABLE_LOCKING_STYLE
   int isAutoProxy  = (flags & SQLITE_OPEN_AUTOPROXY);
 #endif
@@ -6080,7 +6225,7 @@ static int unixOpen(
   **   (d) if DELETEONCLOSE is set, then CREATE must also be set.
   */
   assert((isReadonly==0 || isReadWrite==0) && (isReadWrite || isReadonly));
-  assert(isCreate==0 || isReadWrite);
+//  assert(isCreate==0 || isReadWrite);
   assert(isExclusive==0 || isCreate);
   assert(isDelete==0 || isCreate);
 

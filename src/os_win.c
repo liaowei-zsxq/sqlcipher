@@ -236,6 +236,34 @@ WINBASEAPI BOOL WINAPI UnmapViewOfFile(LPCVOID);
 # define FILE_ATTRIBUTE_MASK     (0x0003FFF7)
 #endif
 
+#ifdef SQLITE_WCDB_LOCK_HOOK
+struct WinLockHook {
+  void (*xWillLock)(void *parameter, const char* path, int lock);
+  void (*xLockDidChange)(void *parameter, const char* path, int lock);
+  void (*xWillShmLock)(void *parameter, const char* path, int flags, int mask);
+  void (*xShmLockDidChange)(void *parameter, const char* path, void* id, int sharedMask, int exclMask);
+  void *pArg;
+};
+typedef struct WinLockHook WinLockHook;
+
+SQLITE_WSD static WinLockHook winLockHook = { 0 };
+#define winLockHook GLOBAL(WinLockHook *, winLockHook)
+
+int sqlite3_lock_hook(void (*xWillLock)(void *pArg, const char* zPath, int eLock),
+                      void (*xLockDidChange)(void *pArg, const char* zPath, int eLock),
+                      void (*xWillShmLock)(void *pArg, const char* zPath, int flags, int mask),
+                      void (*xShmLockDidChange)(void *pArg, const char* zPath, void* id, int sharedMask, int exclMask),
+                      void *pArg) {
+  if( sqlite3GlobalConfig.isInit ) return SQLITE_MISUSE_BKPT;
+  winLockHook.xWillLock = xWillLock;
+  winLockHook.xLockDidChange = xLockDidChange;
+  winLockHook.xWillShmLock = xWillShmLock;
+  winLockHook.xShmLockDidChange = xShmLockDidChange;
+  winLockHook.pArg = pArg;
+  return SQLITE_OK;
+}
+#endif
+
 #ifndef SQLITE_OMIT_WAL
 /* Forward references to structures used for WAL */
 typedef struct winShm winShm;           /* A connection to shared-memory */
@@ -2697,6 +2725,11 @@ static int winClose(sqlite3_file *id){
   if( rc ){
     pFile->h = NULL;
   }
+#ifdef SQLITE_WCDB_LOCK_HOOK
+  if (winLockHook.xLockDidChange != NULL) {
+    winLockHook.xLockDidChange(winLockHook.pArg, pFile->zPath, NO_LOCK);
+  }
+#endif
   OpenCounter(-1);
   OSTRACE(("CLOSE pid=%lu, pFile=%p, file=%p, rc=%s\n",
            osGetCurrentProcessId(), pFile, pFile->h, rc ? "ok" : "failed"));
@@ -3265,6 +3298,12 @@ static int winLock(sqlite3_file *id, int locktype){
   assert( pFile->locktype!=NO_LOCK || locktype==SHARED_LOCK );
   assert( locktype!=PENDING_LOCK );
   assert( locktype!=RESERVED_LOCK || pFile->locktype==SHARED_LOCK );
+    
+#ifdef SQLITE_WCDB_LOCK_HOOK
+  if (winLockHook.xWillLock != NULL) {
+    winLockHook.xWillLock(winLockHook.pArg, pFile->zPath, locktype);
+  }
+#endif
 
   /* Lock the PENDING_LOCK byte if we need to acquire a PENDING lock or
   ** a SHARED lock.  If we are acquiring a SHARED lock, the acquisition of
@@ -3366,6 +3405,11 @@ static int winLock(sqlite3_file *id, int locktype){
              pFile->h, locktype, newLocktype));
   }
   pFile->locktype = (u8)newLocktype;
+#ifdef SQLITE_WCDB_LOCK_HOOK
+  if (res && winLockHook.xLockDidChange != NULL) {
+    winLockHook.xLockDidChange(winLockHook.pArg, pFile->zPath, pFile->locktype);
+  }
+#endif
   OSTRACE(("LOCK file=%p, lock=%d, rc=%s\n",
            pFile->h, pFile->locktype, sqlite3ErrName(rc)));
   return rc;
@@ -3440,6 +3484,11 @@ static int winUnlock(sqlite3_file *id, int locktype){
     winUnlockFile(&pFile->h, PENDING_BYTE, 0, 1, 0);
   }
   pFile->locktype = (u8)locktype;
+#ifdef SQLITE_WCDB_LOCK_HOOK
+  if (winLockHook.xLockDidChange != NULL) {
+    winLockHook.xLockDidChange(winLockHook.pArg, pFile->zPath, pFile->locktype);
+  }
+#endif
   OSTRACE(("UNLOCK file=%p, lock=%d, rc=%s\n",
            pFile->h, pFile->locktype, sqlite3ErrName(rc)));
   return rc;
@@ -4038,6 +4087,12 @@ static int winShmUnmap(
   sqlite3_mutex_enter(pShmNode->mutex);
   for(pp=&pShmNode->pFirst; (*pp)!=p; pp = &(*pp)->pNext){}
   *pp = p->pNext;
+    
+#ifdef SQLITE_WCDB_LOCK_HOOK
+  if (winLockHook.xShmLockDidChange != NULL) {
+    winLockHook.xShmLockDidChange(winLockHook.pArg, pDbFd->zPath, p, 0, 0);
+  }
+#endif
 
   /* Free the connection p */
   sqlite3_free(p);
@@ -4083,6 +4138,16 @@ static int winShmLock(
 
   mask = (u16)((1U<<(ofst+n)) - (1U<<ofst));
   assert( n>1 || mask==(1<<ofst) );
+    
+#ifdef SQLITE_WCDB_LOCK_HOOK
+  if (winLockHook.xWillShmLock != NULL && (flags & SQLITE_SHM_LOCK) != 0) {
+    winLockHook.xWillShmLock(winLockHook.pArg,
+                              pDbFd->zPath,
+                              flags & (SQLITE_SHM_SHARED | SQLITE_SHM_EXCLUSIVE),
+                              mask);
+  }
+#endif
+    
   sqlite3_mutex_enter(pShmNode->mutex);
   if( flags & SQLITE_SHM_UNLOCK ){
     u16 allMask = 0; /* Mask of locks held by siblings */
@@ -4105,6 +4170,11 @@ static int winShmLock(
     if( rc==SQLITE_OK ){
       p->exclMask &= ~mask;
       p->sharedMask &= ~mask;
+#ifdef SQLITE_WCDB_LOCK_HOOK
+      if (winLockHook.xShmLockDidChange != NULL) {
+        winLockHook.xShmLockDidChange(winLockHook.pArg, pDbFd->zPath, p, p->sharedMask, p->exclMask);
+      }
+#endif
     }
   }else if( flags & SQLITE_SHM_SHARED ){
     u16 allShared = 0;  /* Union of locks held by connections other than "p" */
@@ -4133,6 +4203,11 @@ static int winShmLock(
     /* Get the local shared locks */
     if( rc==SQLITE_OK ){
       p->sharedMask |= mask;
+#ifdef SQLITE_WCDB_LOCK_HOOK
+      if (winLockHook.xShmLockDidChange != NULL) {
+          winLockHook.xShmLockDidChange(winLockHook.pArg, pDbFd->zPath, p, p->sharedMask, p->exclMask);
+      }
+#endif
     }
   }else{
     /* Make sure no sibling connections hold locks that will block this
@@ -4153,6 +4228,11 @@ static int winShmLock(
       if( rc==SQLITE_OK ){
         assert( (p->sharedMask & mask)==0 );
         p->exclMask |= mask;
+#ifdef SQLITE_WCDB_LOCK_HOOK
+        if (winLockHook.xShmLockDidChange != NULL) {
+            winLockHook.xShmLockDidChange(winLockHook.pArg, pDbFd->zPath, p, p->sharedMask, p->exclMask);
+        }
+#endif
       }
     }
   }
@@ -4338,6 +4418,119 @@ shmpage_out:
   sqlite3_mutex_leave(pShmNode->mutex);
   return rc;
 }
+      
+#ifdef SQLITE_WCDB
+void checkOpenShm(sqlite3_file *fd, int *opened)
+{
+  winFile *pDbFd=(winFile*)fd;
+  if(pDbFd->pShm!=NULL){
+    *opened = 1;
+    return;
+  }
+  int pathLength = sqlite3Strlen30(pDbFd->zPath);
+  char* shmName = sqlite3MallocZero( pathLength + 17 );
+  if(shmName == NULL) {
+    // No memory. Set opened to 1 to avoid further operations.
+    *opened = 1;
+    return;
+  }
+  sqlite3_snprintf(pathLength+15, shmName, "%s-shm", pDbFd->zPath);
+  sqlite3FileSuffix3(pDbFd->zPath, shmName);
+
+  winShmNode *pShmNode = 0;
+  *opened = 0;
+
+  winShmEnterMutex();
+  for(pShmNode=winShmNodeList; pShmNode; pShmNode=pShmNode->pNext){
+      if( sqlite3StrICmp(pShmNode->zFilename, shmName)==0 ) {
+        *opened = 1;
+        break;
+      }
+  }
+  winShmLeaveMutex();
+}
+      
+sqlite3_int64 enterMutexAndLockShm(sqlite3_file *fd) {
+  winShmEnterMutex();
+  HANDLE shmHandle = INVALID_HANDLE_VALUE;
+  winFile *pDbFd = (winFile*)fd;
+
+  int pathLength = sqlite3Strlen30(pDbFd->zPath);
+  char* shmName = sqlite3MallocZero( pathLength + 17 );
+  if(shmName == NULL) {
+    goto shm_lock_finish;
+  }
+  sqlite3_snprintf(pathLength+15, shmName, "%s-shm", pDbFd->zPath);
+  sqlite3FileSuffix3(pDbFd->zPath, shmName);
+
+  winShmNode *pShmNode = 0;
+  int checked = 0;
+
+  for(pShmNode = winShmNodeList; pShmNode; pShmNode=pShmNode->pNext){
+    if( sqlite3StrICmp(pShmNode->zFilename, shmName)==0 ) {
+      checked = 1;
+      break;
+    }
+  }
+  if(checked) {
+    goto shm_lock_finish;
+  }
+  int inFlags = SQLITE_OPEN_WAL | SQLITE_OPEN_READONLY;
+  int outFlags = SQLITE_OPEN_READONLY;
+  winFile winFile;
+
+  int rc = winOpen(pDbFd->pVfs, shmName, (sqlite3_file*)&winFile, inFlags, &outFlags);
+  if (rc != SQLITE_OK || winFile.h == INVALID_HANDLE_VALUE) {
+    goto shm_lock_finish;
+  }
+  
+  rc = winLockFile(&winFile.h, LOCKFILE_FAIL_IMMEDIATELY, WIN_SHM_DMS, 0, 1, 0);
+  if (rc != SQLITE_OK) {
+    winUnlockFile(&winFile.h, WIN_SHM_DMS, 0, 1, 0);
+    winClose((sqlite3_file *)&winFile);
+    goto shm_lock_finish;
+  }
+  
+  shmHandle = winFile.h;
+    
+shm_lock_finish:
+  if(shmName != 0){
+    sqlite3_free(shmName);
+  }
+  return (sqlite3_int64)shmHandle;
+}
+
+void leaveMutexAndUnLockShm(sqlite3_int64 handle) {
+  HANDLE shmHandle = (HANDLE)handle;
+  if (shmHandle != 0 && shmHandle != INVALID_HANDLE_VALUE) {
+    winUnlockFile(&shmHandle, WIN_SHM_DMS, 0, 1, 0);
+    int rc, cnt = 0;
+    do {
+      rc = osCloseHandle(shmHandle);
+      /* SimulateIOError( rc=0; cnt=MX_CLOSE_ATTEMPT; ); */
+    } while (rc == 0 && ++cnt < MX_CLOSE_ATTEMPT && (sqlite3_win32_sleep(100), 1));
+  }
+  winShmLeaveMutex();
+}
+
+int readShmFile(sqlite3_int64 handle, sqlite3_int64 offset, void *pBuf, int cnt) {
+  winFile winFile;
+  memset((void*)&winFile, 0, sizeof(winFile));
+  winFile.h = (HANDLE)handle;
+  winFile.zPath = "";
+  sqlite3_int64 size = 0;
+  int rc = SQLITE_OK;
+  rc = winFileSize((sqlite3_file *)&winFile, &size);
+  if(rc != SQLITE_OK){
+    return rc;
+  }
+  if(size<offset+cnt){
+    return SQLITE_IOERR_SHORT_READ;
+  }
+  return winRead((sqlite3_file *)&winFile, pBuf, cnt, offset);
+}
+
+#endif
 
 #else
 # define winShmMap     0

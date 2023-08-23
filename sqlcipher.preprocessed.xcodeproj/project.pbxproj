@@ -708,9 +708,11 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = 39FFA7ED22366BD600735F05 /* Debug.xcconfig */;
 			buildSettings = {
-				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
-				CLANG_CXX_LIBRARY = "libc++";
-				TARGETED_DEVICE_FAMILY = "1,2,4,6";
+				ARCHS = (
+					"$(ARCHS_STANDARD)",
+					arm64e,
+				);
+				DEAD_CODE_STRIPPING = YES;
 			};
 			name = Debug;
 		};
@@ -718,9 +720,11 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = 39FFA7EC22366BD600735F05 /* Release.xcconfig */;
 			buildSettings = {
-				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
-				CLANG_CXX_LIBRARY = "libc++";
-				TARGETED_DEVICE_FAMILY = "1,2,4,6";
+				ARCHS = (
+					"$(ARCHS_STANDARD)",
+					arm64e,
+				);
+				DEAD_CODE_STRIPPING = YES;
 			};
 			name = Release;
 		};
