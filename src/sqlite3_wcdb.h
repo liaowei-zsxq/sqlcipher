@@ -30,6 +30,27 @@ extern "C" {
 
 #ifdef SQLITE_WCDB
 
+SQLITE_API int sqlite3_schema_info(
+  sqlite3 *db,
+  int *tableCount,
+  int *indexCount,
+  int *triggerCount
+);
+
+SQLITE_API int sqlite3_table_config(
+  sqlite3 *db,
+  const char *dbName,
+  const char *tableName,
+  int *pAutoIncrement,
+  int *pWithoutRowid,
+  const char **pIntegerPrimaryKey
+);
+
+SQLITE_API int sqlite3_table_config_auto_increment(
+  sqlite3 *db,
+  const char *tableName
+);
+
 #ifdef SQLITE_WCDB_LOCK_HOOK
 /*
  ** Register handlers when lock state changed.
@@ -68,6 +89,9 @@ void* sqlite3_getCipherContext(sqlite3 *db, const char* schema);
 int sqlcipher_codec_ctx_get_reservesize(void *ctx);
 
 void* sqlite3Codec(void *iCtx, void *data, unsigned int pgno, int mode);
+
+int sqlcipher_find_db_index(sqlite3 *db, const char *zDb);
+void sqlite3CodecGetKey(sqlite3* db, int nDb, void **zKey, int *nKey);
 
 #endif // SQLITE_WCDB
 
