@@ -2,7 +2,7 @@
 SUPPORTED_PLATFORMS = macosx iphoneos iphonesimulator watchos watchsimulator appletvos appletvsimulator
 VALID_ARCHS = $(ARCHS_STANDARD)
 
-CLANG_CXX_LANGUAGE_STANDARD = "gnu++17"
+CLANG_CXX_LANGUAGE_STANDARD = gnu++17
 
 // Deployment
 SKIP_INSTALL = YES
